@@ -1,0 +1,388 @@
+#!/bin/bash
+
+read -r -d '' doc <<-EOM
+Welcome to the Angie Template System for Script and Programs
+EOM
+
+source angielib.sh
+
+[ -d "${_CONFIG}" ] || mkdir -pv "${_CONFIG}"
+
+read -r -d '' default_config << "EOM"
+# Defaults to "./"
+ROOT_DIR=
+
+# Initialized to $ROOT_DIR/{DIR}.
+DEFAULT_TARGET_DIR=
+
+# will be injected into the environment of this command.
+EXEC_HOOK_CMD=
+
+# Directory for storing angie templates.
+# Defaults to "~/.litter".
+LITTER_DIR=~/.litter
+EOM
+
+config_file="${_CONFIG}"/config
+if [[ -f "${config_file}" ]]; then
+    source "${config_file}"
+else
+    info "Configruation file was successfully initialized."
+    echo "${default_config}" > "${config_file}"
+fi
+
+# Set default bin directory if not specified in config file.
+if [[ -z "${ROOT_DIR}" ]]; then
+    ROOT_DIR=./
+fi
+
+if [[ -z "${LITTER_DIR}" ]]; then
+    LITTER_DIR="${HOME}"/.litter
+fi
+
+# ---------- Traps ----------
+exit_handler(){
+    EC="$1"; shift
+    created_by_me="$1"; shift
+    dest_dir="$1"; shift
+
+    if [[ "${created_by_me}" = true && "${EC}" -ne 0 ]]; then
+        debug "Removing directory: ${dest_dir}"
+        rm -rf "${dest_dir}"
+    fi
+}
+
+trap 'exit_handler $? ${parent_dir_created} ${dest_dir}' EXIT
+
+# ---------- Function Definitions ----------
+main() {
+	parse_args "$@"
+	get_dest_dir "${target}" "${force}"
+	full_target="${dest_dir}"/"${target}"
+	full_template="${LITTER_DIR}"/"${template}"
+	if ! [[ -f "${full_template}" ]]; then
+		if [[ -d "${full_template}" ]]; then
+			cp -r "${full_template}" "${full_target}"
+			info "Initializing the '${full_target}' directory."
+			exit 0
+		fi
+		die "Template does not exist: ${full_template}"
+	fi
+	# ===== Initialize New Script =====
+	# Copy Template Contents to New Script
+	if ! [[ -f "${full_target}" ]];
+	then
+		info "Initializing the '${full_target}' script."
+		cp "${full_template}" "${full_target}"
+	else
+        	info "The '${full_target}' script already exists."
+        	eval "$(editor_cmd "" "" "NORMAL" "${full_target}")"
+        	exit 0
+	fi
+	# Set File Mode
+	if [[ -n "${mode}" ]];
+	then
+		sudo chmod "${mode}" "${full_target}"
+		if [[ "${executable}" = true ]];
+		then
+			if [[ -n "${EXEC_HOOK_CMD}" ]];
+			then
+                		TARGET="${full_target}" eval "info \"Running execute hook: ${EXEC_HOOK_CMD}\""
+                		TARGET="${full_target}" eval "${EXEC_HOOK_CMD}"
+            		fi
+        	fi
+    	fi
+	contents="$(cat "${full_target}")"
+	template_engine "${contents}"
+	echo "${new_contents}" > "${full_target}"
+	eval "$(editor_cmd "${start_line}" "${start_col}" "${mode}" "${full_target}")"
+}
+
+parse_args(){
+    eval set -- "$(getopt -o "d,c,D:,e:,f,F:,h,l,m:,r:,v,x" -l "config,debug,docs:,bin-subdir:,edit:,help,list,mode:,remove:,verbose,use-extension:" -- "$@")"
+    export USAGE_GRAMMAR=(
+        "[-d] [-D TARGET_DIR] [-f] [-m MODE] [-v] [-x] TEMPLATE [TARGET]"
+        "-c"
+        "-e TEMPLATE"
+        "-h"
+        "-l [TEMPLATE]"
+        "-r TEMPLATE"
+    )
+    if [[ -n "${EDITOR}" ]]; then
+        EDITOR="${EDITOR}"
+    else
+        EDITOR="vim"
+    fi
+
+    read -r -d '' help <<-EOM
+    $(usage)
+
+	${doc}
+
+	Positional Arguments:
+	    TARGET          The name of the file to initialize.
+	Optional Arguments:
+	    -d | --debug
+	        Enable debug mode.
+
+	    -c | --config
+	        Edit the configuration file.
+
+	    -D DIR | --bin-subdir DIR
+	        Initialize TARGET into DIR, which should be a subdirectory of the
+	        default bin directory (see the configuration file).
+
+	    -e TEMPLATE | --edit TEMPLATE
+	        Add / edit angie template.
+
+	    -f | --force
+	        Force TARGET initialization to be relative to the current
+	        directory. This option essentially overrides the ROOT_DIR
+	        configuration setting. Enabled by default for non-executable
+	        targets.
+
+	    -h | --help
+	        View this help message.
+
+	    -l [TEMPLATE] | --list [TEMPLATE]
+	        If TEMPLATE is provided, output template contents to STDOUT.
+	        Otherwise, list available templates.
+
+	    -m MODE | --mode MODE
+	        Sets file mode bits. Accepts any form for MODE that is recognized
+	        by the 'chmod' command.
+
+	    -r TEMPLATE | --remove TEMPLATE
+	        Delete angie template.
+
+	    -x
+	        Make TARGET executable. Equivalent to '-m +x'.
+
+	    -v | --verbose
+	        Enable verbose output.
+	EOM
+
+    force=false
+    template=
+    target=
+    debug=false
+    verbose=false
+
+    while [[ -n "$1" ]]; do
+        case $1 in
+           -c|--config )
+               "${EDITOR}" "${config_file}"
+               exit 0
+               ;;
+           -d|--debug )
+               debug=true
+               ;;
+           -e|--edit )
+               shift
+               "${EDITOR}" "${LITTER_DIR}"/"$1"
+               exit 0
+               ;;
+           -h|--help )
+               echo "${help}"
+               exit 0
+               ;;
+           -l|--list )
+               list=true
+               ;;
+           -D|--bin-subdir )
+               shift
+               target_dir="$1"
+               ;;
+           --docs )
+               shift
+               eval "printf -- \"\${$1}\n\""
+               exit 0
+               ;;
+           -f )
+               force=true
+               ;;
+           -m|--mode )
+               shift
+               mode="$1"
+               ;;
+           -r|--remove )
+               shift
+               template="$1"
+               remove=true
+               ;;
+           -v|--verbose )
+               verbose=true
+               ;;
+           -x )
+               mode="+x"
+               ;;
+           -- )
+               shift
+               break
+               ;;
+        esac
+        shift
+    done
+
+    if [[ "${list}" = true ]]; then
+        if [[ -n "$1" ]]; then
+            template="$1"; shift
+            full_template="${LITTER_DIR}"/"${template}"
+            [[ -f "${full_template}" ]] || die "Template does not exist: ${full_template}"
+            cat "${full_template}"
+        else
+           for T in "${LITTER_DIR}"/*; do
+               [[ -f "${T}" ]] && basename "${T}"
+           done
+        fi
+
+       exit 0
+    fi
+
+    if [[ "${remove}" = true ]]; then
+       full_template="${LITTER_DIR}"/"${template}"
+       [[ -f "${full_template}" ]] || die "Template does not exist: ${full_template}"
+       read -n1 -p "Are you sure you want to delete the ${template} template? [y/n]: " choice
+       if [[ "${choice}" == "y" ]]; then
+           rm "${full_template}"
+           printf "\n"
+           info "The ${template} template has been deleted."
+       fi
+       exit 0
+    fi
+
+    if [[ "${mode}" == *"7"* || "${mode}" == *"+"*"x"* ]]; then
+        executable=true
+    else
+        executable=false
+        force=true
+    fi
+
+    if [[ "${debug}" = true && "${verbose}" = true ]]; then
+        PS4='$LINENO: '
+        set -x
+    fi
+	if [[ -z "$1" ]]; then
+        	die "$(usage)" 2
+	fi
+
+	template="$1"; shift
+
+	if [[ -n "$1" ]];
+	then
+		target="$1"; shift
+	else
+		target="$(basename "${template}")"
+	fi
+}
+
+get_dest_dir() {
+    target="$1"; shift
+    force="$1"; shift
+
+    if [[ "${target}" == "/"* ]]; then
+        dest_dir="$(dirname "${target}")"
+        target="$(basename "${target}")"
+        return 0
+    fi
+
+    # ===== Calculate Filesystem Paths =====
+    if [[ "$PWD" == "${ROOT_DIR}"/* && -z "${target_dir}" ]] || [[ "${force}" = true ]]; then
+        dest_dir="$PWD"
+    elif [[ -n "${target_dir}" ]]; then
+        dest_dir="${ROOT_DIR}"/"${target_dir}"
+    elif [[ -n "${DEFAULT_TARGET_DIR}" ]]; then
+        dest_dir="${ROOT_DIR}"/"${DEFAULT_TARGET_DIR}"
+    else
+        dest_dir="${ROOT_DIR}"
+    fi
+
+    target_dir="$(dirname "${target}")"
+
+    if [[ "${target_dir}" != "." ]]; then
+        dest_dir="${dest_dir}"/"${target_dir}"
+        target="$(basename "${target}")"
+    fi
+
+    if [[ "${dest_dir}" != "./"* ]]; then
+        if ! [[ -d "${dest_dir}" ]]; then
+            debug "Creating directory: ${dest_dir}"
+            mkdir -p "${dest_dir}"
+            parent_dir_created=true
+        fi
+    fi
+}
+
+template_engine(){
+    old_contents="$1"; shift
+    new_contents="${old_contents}"
+
+    # ===== Template Statements and Substitutions =====
+    # START HERE
+    istart_mark="{% INSERT %}"
+    read -r iline icol <<< "$(get_start_line "${istart_mark}" "${old_contents}")"
+
+    nstart_mark="{% NORMAL %}"
+    read -r nline ncol <<< "$(get_start_line "${nstart_mark}" "${old_contents}")"
+
+    new_contents="${new_contents//\{% INSERT %\}}"
+    new_contents="${new_contents//\{% NORMAL %\}}"
+
+    if [[ -n "${iline}" ]] && [[ "${iline}" -gt 0 ]]; then
+        mode="INSERT"
+        start_line="${iline}"
+        start_col="${icol}"
+    elif [[ -n "${nline}" ]] && [[ "${nline}" -gt 0 ]]; then
+        mode="NORMAL"
+        start_line="${nline}"
+        start_col="${ncol}"
+    fi
+    # Environment Variable Replacements
+    grep_epttrn="{{[ ]*(.*?)[ ]*}}"
+    sed_epttrn="{{[ ]*\([^ ]*\)[ ]*}}"
+    exec 5>&0  # save STDIN
+    while read evar;
+    do
+        evalue="$(eval "echo \"\$${evar}\"")"
+        if [[ -z "${evalue}" ]]; then
+            read -p "${evar}: " evalue <&5
+            eval "${evar}=${evalue}"
+        fi
+        new_contents="$(echo "${new_contents}" | sed "s/{{[ ]*${evar}[ ]*}}/${evalue}/g")"
+        new_contents="$(echo "${new_contents}" | sed "s/{{[ ]*litter.${evar}[ ]*}}/${evalue}/g")"
+    done < <(echo "${new_contents}" | grep -P -o "${grep_epttrn}" | sed "s/${sed_epttrn}/\1/" | sed 's/litter\.//')  # LCOV_EXCL_LINE
+}
+
+get_start_line() {
+    mark="$1"; shift
+    contents="$1"; shift
+    line="$(echo "${contents}" | grep -n "${mark}" | awk -F':' '{print $1}')"
+    line_contents="$(echo "${contents}" | grep "${mark}")"
+    col="$(awk -v line_contents="${line_contents}" 'BEGIN{print index(line_contents, "{")}')"
+    printf "${line} ${col}\n"
+}
+
+editor_cmd() {
+    start_line="$1"; shift
+    start_col="$1"; shift
+    mode="$1"; shift
+    full_target="$1"; shift
+
+    if [[ "${EDITOR}" == *"vim"* ]]; then
+        Vim_Opts=()
+        if [[ -n "${start_line}" ]] && [[ -n "${start_col}" ]]; then
+            Vim_Opts+=( "-c" "\"call cursor(${start_line},${start_col})\"" )
+        fi
+
+        if [[ "${mode}" == "INSERT" ]]; then
+            Vim_Opts+=( +startinsert )
+        fi
+        echo "${EDITOR} ${Vim_Opts[*]} ${full_target}"
+    else
+        echo "${EDITOR} ${full_target}"
+    fi
+}
+
+if [[ "${SCRIPTNAME}" == "angie" ]]; then
+    main "$@"
+fi
